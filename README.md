@@ -49,4 +49,19 @@ encrypted file.
 secrt my-doc.secrt
 ```
 
-If the file does not exists, a new empty one will be created.
+If the file does not exists, a new empty one will be created.  In the
+same way, if we reference an clean file that is new or has content,
+`secrt` will open the editor and will save the encrypted version with
+the `.secrt` extension.
+
+
+## Notes
+
+The `systemd-creds` secret host file that lives in
+`/var/lib/systemd/credential.secret` is not used by `secrt`.  It
+generates a new one using the machine-id as a predictable seed, and is
+never persisted in the system.
+
+The name of the file and the timestamp is stored in the encrypted
+file.  If the file gets renamed, it will be detected and the
+decryption will be refused.
