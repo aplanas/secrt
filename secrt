@@ -10,7 +10,7 @@ h() {
     echo "  -f                overwrite the encrypted file"
     echo "  -e  <FILE>        encrypt file and replace it with the new one"
     echo "  -d  <FILE>        decrypt file to stdout"
-    echo " [-x] <FILE>        (default) edit encrypted file with $EDITOR (vi)"
+    echo " [-x] <FILE>        (default) edit encrypted file with \$EDITOR (vi)"
 
     exit "${1:-0}"
 }

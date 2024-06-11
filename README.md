@@ -15,6 +15,21 @@ generate a new document with `.secrt` extension and will remove the
 original one.  To keep the clean file use the `-k` parameter.
 
 ```bash
+secrt -h
+
+Usage: secrt [OPTION]... [FILE]
+Create and edit files encrypted by TPM2
+
+  -h                show this help
+  -s                show if dependencies are present
+  -k                keep the clean file
+  -f                overwrite the encrypted file
+  -e  <FILE>        encrypt file and replace it with the new one
+  -d  <FILE>        decrypt file to stdout
+ [-x] <FILE>        (default) edit encrypted file with $EDITOR (vi)
+```
+
+```bash
 secrt -e existent-doc
 ```
 
