@@ -1,0 +1,214 @@
+#! /usr/bin/bash
+
+h() {
+    echo "Usage: secrt [OPTION]... [FILE]"
+    echo "Create and edit files encrypted by TPM2"
+    echo
+    echo "  -h                show this help"
+    echo "  -s                show if dependencies are present"
+    echo "  -k                keep the clean file"
+    echo "  -f                overwrite the encrypted file"
+    echo "  -e  <FILE>        encrypt file and replace it with the new one"
+    echo "  -d  <FILE>        decrypt file to stdout"
+    echo " [-x] <FILE>        (default) edit encrypted file with $EDITOR (vi)"
+
+    exit "${1:-0}"
+}
+
+KEEP=0
+FORCE=0
+
+TMPDIR=$(mktemp -d) && chmod 700 "$TMPDIR"
+cleanup() {
+    rm -rf "$TMPDIR"
+}
+trap cleanup EXIT
+
+# Not cryptographically secure, but we depends on the TPM2
+random_secret() {
+    local app_id machine_id byte
+    [ -e "$TMPDIR/credential.secret" ] && return
+
+    # This long number is systemd-creds application id
+    app_id="$(systemd-id128 machine-id -a d3acecba0dad4cdfb8c9381528936c58 | sed 's/../\\x&/g')"
+    echo -n -e "$app_id" > "$TMPDIR/credential.secret"
+
+    read -r machine_id < "/etc/machine-id"
+    RANDOM=$((16#$machine_id))
+    for _ in $(seq 4096); do
+	printf -v byte '%x' $((RANDOM%256))
+	echo -n -e "\\x$byte" >> "$TMPDIR/credential.secret"
+    done
+    chmod 400 "$TMPDIR/credential.secret"
+}
+
+status_systemd_creds() {
+    systemd-creds --version &> /dev/null || {
+	echo "systemd-creds not found"
+	return 1
+    }
+}
+
+status_tpm2() {
+    while read -r line; do
+	if [ "$line" = "no" ]; then
+	    echo "TPM2 not detected"
+	    return 1
+	elif [ "${line:0:1}" = "-" ]; then
+	    echo "Missing TPM2 ${line:1}"
+	    return 1
+	fi
+    done < <(systemd-creds has-tpm2)
+}
+
+status_permissions() {
+    local tpm2_group
+    tpm2_group="$(stat -c %G /dev/tpmrm0)"
+    id -nG "$USER" | grep -qw "$tpm2_group" || {
+	echo "User $USER has not access permissions to TPM2"
+	echo "Add $USER into group $tpm2_group"
+	return 1
+    }
+}
+
+status() {
+    status_systemd_creds && status_tpm2 && status_permissions
+}
+
+is_encrypted() {
+    local filename
+    filename="$(basename "$1")"
+    [ "${filename##*.}" = "secrt" ]
+}
+
+encrypt() {
+    local filename="$1"
+
+    is_encrypted "$filename" && {
+	echo "File already encrypted"
+	return
+    }
+
+    [ -e "$filename.secrt" ] && [ "$FORCE" = "0" ] && {
+	echo "Encrypted file $filename.secrt exists"
+	return
+    }
+
+    random_secret
+
+    local enc
+    enc="$TMPDIR/$(basename "$filename").secrt"
+    SYSTEMD_CREDENTIAL_SECRET="$TMPDIR/credential.secret" systemd-creds \
+			     --with-key=host+tpm2 \
+			     --tpm2-device=auto \
+			     encrypt "$filename" "$enc" 2> "$TMPDIR/log" || {
+	echo "Error encrypting $1:"
+	cat "$TMPDIR/log"
+    }
+    mv "$enc" "$filename.secrt"
+    [ "$KEEP" = "1" ] || rm "$filename"
+
+    echo "Successfully encrypted $filename in $filename.secrt"
+}
+
+decrypt() {
+    local filename="$1"
+
+    is_encrypted "$filename" || {
+	echo "File is not encrypted"
+	return
+    }
+
+    random_secret
+
+    SYSTEMD_CREDENTIAL_SECRET="$TMPDIR/credential.secret" systemd-creds \
+			     --no-pager \
+			     decrypt "$filename" 2> "$TMPDIR/log" || {
+	echo "Error decrypting $filename:"
+	cat "$TMPDIR/log"
+    }
+}
+
+edit() {
+    local filename="$1"
+    local new_file=0
+
+    [ -e "$filename" ] || {
+	touch "$filename"
+	new_file=1
+    }
+
+    is_encrypted "$filename" || {
+	encrypt "$filename"
+	filename="$filename.secrt"
+    }
+
+    random_secret
+
+    local enc dec
+    dec="$(mktemp --tmpdir="$TMPDIR")"
+    if [ "$new_file" = "0" ]; then
+	SYSTEMD_CREDENTIAL_SECRET="$TMPDIR/credential.secret" systemd-creds \
+				 decrypt "$filename" "$dec" 2> "$TMPDIR/log" || {
+	    echo "Error decrypting $filename:"
+	    cat "$TMPDIR/log"
+	}
+    fi
+
+    ${EDITOR:-vi} "$dec"
+
+    enc="$TMPDIR/$(basename "$filename")"
+    SYSTEMD_CREDENTIAL_SECRET="$TMPDIR/credential.secret" systemd-creds \
+			     --with-key=host+tpm2 \
+			     --tpm2-device=auto \
+			     encrypt "$dec" "$enc" 2> "$TMPDIR/log" || {
+	echo "Error re-encrypting $1:"
+	cat "$TMPDIR/log"
+    }
+    mv "$enc" "$filename"
+}
+
+
+OPTSTRING=":hskfe:d:x:"
+while getopts "$OPTSTRING" name; do
+    case "$name" in
+	h)
+	    h 0
+	    ;;
+	s)
+	    status && {
+		echo "All dependecies present!"
+		exit 0
+	    }
+	    exit 1
+	    ;;
+	k)
+	    KEEP=1
+	    ;;
+	f)
+	    FORCE=1
+	    ;;
+	e)
+	    encrypt "$OPTARG"
+	    exit 0
+	    ;;
+	d)
+	    decrypt "$OPTARG"
+	    exit 0
+	    ;;
+	x)
+	    edit "$OPTARG"
+	    exit 0
+	    ;;
+	?)
+	    echo "Parameter not recognized"
+	    h 1
+	    ;;
+    esac
+done
+
+[ -n "$1" ] || {
+    echo "Missing encrypted file parameter. Use -h for help"
+    exit 1
+}
+edit "$1"
